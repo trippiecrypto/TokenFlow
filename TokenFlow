@@ -1,0 +1,102 @@
+from web3 import Web3
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+class TokenFlow:
+    def __init__(self, eth_infura_url: str, token_contract_address: str):
+        self.web3 = Web3(Web3.HTTPProvider(eth_infura_url))
+        if not self.web3.isConnected():
+            raise Exception("Failed to connect to the Ethereum node")
+
+        self.token_contract_address = Web3.toChecksumAddress(token_contract_address)
+        self.token_abi = self._get_token_abi()
+
+    def _get_token_abi(self) -> dict:
+        # Simplified ABI for ERC-20 token interactions
+        return [
+            {"constant": True, "inputs": [], "name": "name", "outputs": [{"name": "", "type": "string"}], "payable": False, "stateMutability": "view", "type": "function"},
+            {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "payable": False, "stateMutability": "view", "type": "function"},
+            {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "payable": False, "stateMutability": "view", "type": "function"},
+            {"constant": True, "inputs": [{"name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}], "payable": False, "stateMutability": "view", "type": "function"},
+            {"constant": True, "inputs": [], "name": "totalSupply", "outputs": [{"name": "", "type": "uint256"}], "payable": False, "stateMutability": "view", "type": "function"},
+            {"constant": True, "inputs": [{"name": "account", "type": "address"}], "name": "getPastEvents", "outputs": [{"name": "", "type": "array"}], "payable": False, "stateMutability": "view", "type": "function"}
+        ]
+
+    def _get_contract(self):
+        return self.web3.eth.contract(address=self.token_contract_address, abi=self.token_abi)
+
+    def get_token_info(self) -> dict:
+        contract = self._get_contract()
+        return {
+            'name': contract.functions.name().call(),
+            'symbol': contract.functions.symbol().call(),
+            'decimals': contract.functions.decimals().call(),
+            'total_supply': contract.functions.totalSupply().call()
+        }
+
+    def get_balance(self, wallet_address: str) -> float:
+        contract = self._get_contract()
+        balance = contract.functions.balanceOf(Web3.toChecksumAddress(wallet_address)).call()
+        decimals = contract.functions.decimals().call()
+        return balance / (10 ** decimals)
+
+    def get_token_transactions(self, wallet_address: str, from_block: int, to_block: int) -> pd.DataFrame:
+        url = f"https://api.etherscan.io/api"
+        params = {
+            'module': 'account',
+            'action': 'tokentx',
+            'contractaddress': self.token_contract_address,
+            'address': wallet_address,
+            'startblock': from_block,
+            'endblock': to_block,
+            'sort': 'asc',
+            'apikey': 'YOUR_ETHERSCAN_API_KEY'
+        }
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data['status'] == '1':
+            transactions = data['result']
+            df = pd.DataFrame(transactions)
+            df['timeStamp'] = pd.to_datetime(df['timeStamp'], unit='s')
+            return df
+        else:
+            return pd.DataFrame()
+
+    def plot_transaction_volume(self, wallet_address: str, from_block: int, to_block: int):
+        df = self.get_token_transactions(wallet_address, from_block, to_block)
+        if df.empty:
+            print("No transactions found.")
+            return
+
+        df['value'] = df['value'].astype(float) / (10 ** int(df['tokenDecimal'].iloc[0]))
+        df.set_index('timeStamp', inplace=True)
+        df_resampled = df['value'].resample('D').sum()
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(df_resampled.index, df_resampled, marker='o')
+        plt.title(f'Token Transaction Volume for {wallet_address}')
+        plt.xlabel('Date')
+        plt.ylabel('Volume')
+        plt.grid(True)
+        plt.show()
+
+# Example Usage
+if __name__ == "__main__":
+    ETH_INFURA_URL = 'https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID'
+    TOKEN_CONTRACT_ADDRESS = '0x...YourTokenContractAddress...'  # Replace with your token's contract address
+    WALLET_ADDRESS = '0x...YourWalletAddress...'  # Replace with your wallet address
+
+    token_flow = TokenFlow(ETH_INFURA_URL, TOKEN_CONTRACT_ADDRESS)
+
+    # Fetch Token Information
+    token_info = token_flow.get_token_info()
+    print("Token Information:", token_info)
+
+    # Get Token Balance
+    balance = token_flow.get_balance(WALLET_ADDRESS)
+    print(f"Balance: {balance} {token_info['symbol']}")
+
+    # Plot Transaction Volume
+    token_flow.plot_transaction_volume(WALLET_ADDRESS, from_block=10000000, to_block=10000010)
